@@ -1,0 +1,81 @@
+{
+  "name": "PRTG Alerts + Visual Daily Report",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "prtg-alert",
+        "responseMode": "onReceived"
+      },
+      "name": "PRTG Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Alerts لحظه‌ای و ثبت Downtime\nconst status = $json[\"status\"];\nconst device = $json[\"device\"];\nconst sensor = $json[\"sensor\"];\nconst reason = $json[\"message\"] || 'نامشخص';\nconst now = new Date();\n\nlet text = '';\nlet emoji = '';\nlet downData = $workflow.getGlobal('prtg_down') || {};\nlet history = $workflow.getGlobal('prtg_down_history') || {};\n\nconst key = device + '|' + sensor;\n\nif(status === 'Down') {\n  downData[key] = { start: now, reason: reason };\n  $workflow.setGlobal('prtg_down', downData);\n  emoji = '⚠️';\n  text = `${emoji} *PRTG Alert*: Sensor DOWN!\\n*Device:* ${device}\\n*Sensor:* ${sensor}\\n*Reason:* ${reason}\\n*Time:* ${now.toLocaleString()}`;\n} else if(status === 'Up') {\n  if(downData[key]) {\n    const start = new Date(downData[key].start);\n    const diffMins = (now - start) / 60000;\n    const downtime = diffMins.toFixed(2);\n    const downReason = downData[key].reason;\n\n    // تعیین Emoji بر اساس زمان Downtime\n    if(diffMins < 1) emoji = '✅';\n    else if(diffMins < 3) emoji = '⚠️';\n    else if(diffMins >= 5) emoji = '🔴';\n    else emoji = '⚠️';\n\n    // ثبت در history برای گزارش روزانه\n    if(!history[key]) history[key] = { device: device, sensor: sensor, totalDowntime: 0, count: 0, visual: '' };\n    history[key].totalDowntime += diffMins;\n    history[key].count += 1;\n    history[key].visual += emoji;\n    $workflow.setGlobal('prtg_down_history', history);\n\n    delete downData[key];\n    $workflow.setGlobal('prtg_down', downData);\n\n    text = `${emoji} *PRTG Notification*: Sensor UP\\n*Device:* ${device}\\n*Sensor:* ${sensor}\\n*Downtime:* ${downtime} دقیقه\\n*Reason:* ${downReason}\\n*Time:* ${now.toLocaleString()}`;\n  } else {\n    text = `ℹ️ *PRTG Notification*: Sensor UP but no previous DOWN record.\\n*Device:* ${device}\\n*Sensor:* ${sensor}\\n*Time:* ${now.toLocaleString()}`;\n  }\n}\n$json[\"telegram_text\"] = text;\nreturn $json;"
+      },
+      "name": "Prepare Alert & Track History",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "<YOUR_TELEGRAM_CHAT_ID>",
+        "text": "={{$json[\"telegram_text\"]}}",
+        "parseMode": "Markdown"
+      },
+      "name": "Send Alert Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "triggerTimes": { "item": [] }
+      },
+      "name": "Daily Cron",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [250, 600]
+    },
+    {
+      "parameters": {
+        "functionCode": "// آماده‌سازی گزارش روزانه بصری\nconst history = $workflow.getGlobal('prtg_down_history') || {};\nlet reportLines = [];\nfor (const key in history) {\n  const entry = history[key];\n  reportLines.push(`*${entry.device} - ${entry.sensor}*: ${entry.visual}  ${entry.count} قطعی، مجموع Downtime: ${entry.totalDowntime.toFixed(2)} دقیقه`);\n}\nconst reportText = reportLines.length > 0 ? `📊 *گزارش روزانه PRTG*\\n\\n${reportLines.join('\\n')}` : '📊 هیچ Downtime ثبت نشده است.';\n$json[\"telegram_text\"] = reportText;\nreturn $json;"
+      },
+      "name": "Prepare Visual Daily Report",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [450, 600]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "<YOUR_TELEGRAM_CHAT_ID>",
+        "text": "={{$json[\"telegram_text\"]}}",
+        "parseMode": "Markdown"
+      },
+      "name": "Send Visual Daily Report",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [650, 600]
+    }
+  ],
+  "connections": {
+    "PRTG Webhook": {
+      "main": [[{"node": "Prepare Alert & Track History","type": "main","index": 0}]]
+    },
+    "Prepare Alert & Track History": {
+      "main": [[{"node": "Send Alert Telegram","type": "main","index": 0}]]
+    },
+    "Daily Cron": {
+      "main": [[{"node": "Prepare Visual Daily Report","type": "main","index": 0}]]
+    },
+    "Prepare Visual Daily Report": {
+      "main": [[{"node": "Send Visual Daily Report","type": "main","index": 0}]]
+    }
+  }
+}
